@@ -19,6 +19,7 @@ pub struct VectorIndex {
     inner: Arc<Mutex<HnswIndex>>,
 }
 
+#[allow(dead_code)]
 impl VectorIndex {
     pub fn new(dimensions: usize, max_connections: usize, ef_construction: usize) -> Result<Self> {
         let inner = HnswIndex::new(dimensions, ef_construction, max_connections);
