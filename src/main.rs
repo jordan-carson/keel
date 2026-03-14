@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.vector_dim,
             config.hnsw_ef_construction,
             config.hnsw_m,
+            config.max_entries,
         )?
     );
 

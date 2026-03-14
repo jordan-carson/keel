@@ -53,6 +53,8 @@ pub struct HnswIndex {
     dimensions: usize,
     /// Map from string IDs to usearch u64 keys
     id_map: HashMap<String, u64>,
+    /// Reverse map from usearch u64 keys back to string IDs (O(1) lookup in search)
+    key_to_id: HashMap<u64, String>,
     /// Counter for generating unique keys
     key_counter: u64,
 }
@@ -83,6 +85,7 @@ impl HnswIndex {
             index,
             dimensions,
             id_map: HashMap::new(),
+            key_to_id: HashMap::new(),
             key_counter: 0,
         }
     }
@@ -121,8 +124,9 @@ impl HnswIndex {
             .add(key, vector)
             .map_err(|e| KeelError::Index(e.to_string()))?;
 
-        // Store the mapping
+        // Store both directions of the mapping
         self.id_map.insert(id.to_string(), key);
+        self.key_to_id.insert(key, id.to_string());
 
         Ok(())
     }
@@ -152,21 +156,15 @@ impl HnswIndex {
             .search(query, top_k)
             .map_err(|e| KeelError::Index(e.to_string()))?;
 
-        // Convert u64 keys back to string IDs
+        // Convert u64 keys back to string IDs via reverse map — O(1) per result
         let keys_len = results.keys.len();
         let mut output = Vec::with_capacity(keys_len);
 
-        // Access the keys and distances arrays directly
         for i in 0..keys_len {
             let key = results.keys[i];
             let distance = results.distances[i];
-
-            // Find the string ID for this key
-            for (id, &k) in self.id_map.iter() {
-                if k == key {
-                    output.push((id.clone(), distance));
-                    break;
-                }
+            if let Some(id) = self.key_to_id.get(&key) {
+                output.push((id.clone(), distance));
             }
         }
 
@@ -182,6 +180,7 @@ impl HnswIndex {
     /// Returns an error if the removal fails
     pub fn remove(&mut self, id: &str) -> Result<()> {
         if let Some(key) = self.id_map.remove(id) {
+            self.key_to_id.remove(&key);
             self.index
                 .remove(key)
                 .map_err(|e| KeelError::Index(e.to_string()))?;

@@ -113,6 +113,83 @@ keel is designed to run as a DaemonSet — one instance per inference node. Infe
 | Phase | Status | Description |
 |---|---|---|
 | 1 | ✅ Complete | Single-node daemon: write, read, semantic search, TTL, session eviction, health, signal export |
+| 1.5 | 🔜 Next | **Tantivy storage layer** — replace usearch + sled with Tantivy as the segment/storage backend |
 | 2 | Planned | Multi-node gossip replication; session affinity routing |
 | 3 | Planned | KV cache prefix sharing backed by memory-mapped files |
 | 4 | Planned | S3 training signal export as Parquet |
+| 5 | Planned | **Observer UI** — lightweight HTTP dashboard for ML engineers to monitor keel during training runs via `kubectl port-forward` |
+
+### Phase 1.5 — Tantivy Storage Layer
+
+Replace the current `usearch` + `sled` dual-store with [Tantivy](https://github.com/quickwit-oss/tantivy) as the primary segment/storage backend, keeping a small in-memory flat index as a hot tier for active sessions.
+
+**Architecture after migration:**
+
+```mermaid
+flowchart TD
+    A[gRPC Write / Read / Search] --> B[MemoryRegistry]
+    B --> C[Hot tier\nIn-memory flat index\nactive session vectors]
+    B --> D[Tantivy segment store\nLSM-structured, persistent]
+    D --> D1[Quantized embedding terms\nsemantic search]
+    D --> D2[BM25 on text payload\nkeyword search]
+    D --> D3[Segment files\non disk]
+    D3 -.->|trivial export| E[S3 / Parquet\nPhase 4]
+    D3 -.->|file copy| F[Peer nodes\nPhase 2 replication]
+```
+
+**Why this matters:**
+
+- **Hybrid search** — BM25 keyword search over `payload` text combined with quantized embedding terms gives keel something no existing LLM memory system has: semantic + keyword retrieval in a single query over the same store
+- **Clean deletion semantics** — Tantivy's segment structure handles deletes correctly; usearch has no native delete, only tombstones
+- **Replication becomes file copy** — Tantivy segment files are immutable once written; Phase 2 gossip replication can ship segment files directly rather than replicating individual chunk state
+- **Parquet export for free** — segment files map cleanly to Parquet columnar format for Phase 4 training signal export; no separate export pipeline needed
+- **LSM structure** — write-optimized, naturally handles the append-heavy workload of an LLM memory daemon
+
+**Migration path — gRPC API does not change:**
+
+| Component | Before | After |
+|---|---|---|
+| Semantic search | `HnswIndex` (usearch) | Tantivy quantized embedding terms + hot-tier flat index |
+| Keyword search | Not supported | Tantivy BM25 on `payload` |
+| Persistence | `sled` KV store | Tantivy segment store |
+| Hot session tier | None | In-memory flat index (existing `VectorIndex`) |
+| `MemoryRegistry` API | Unchanged | Unchanged |
+
+### Phase 5 — Observer UI
+
+A lightweight HTTP server (port `9091`, already reserved in the DaemonSet spec) serving a read-only dashboard that ML engineers can reach during a training run without touching the gRPC API or the inference stack.
+
+**Access pattern:**
+```bash
+kubectl port-forward daemonset/keel 9091:9091
+# then open http://localhost:9091 in a browser
+```
+
+**What it shows:**
+
+```mermaid
+flowchart LR
+    A[ML Engineer] -->|kubectl port-forward :9091| B[keel Observer HTTP :9091]
+    B --> C[ /metrics - Prometheus scrape]
+    B --> D[ /ui - Dashboard]
+    B --> E[ /api/sessions - JSON]
+    D --> D1[Chunk counts per session]
+    D --> D2[Hit / miss rates rolling window]
+    D --> D3[Eviction activity timeline]
+    D --> D4[Active sessions + retrieval latency]
+    D --> D5[Signal export lag]
+```
+
+**Implementation:**
+- Single additional port on the existing keel binary — no separate sidecar
+- `/metrics` — [Prometheus](https://prometheus.io/) exposition format; scrape with existing cluster monitoring or `curl`
+- `/ui` — server-rendered HTML (no JS framework); auto-refreshes every few seconds
+- `/api/sessions` — JSON snapshot of active sessions, chunk counts, and last-access times for programmatic querying
+- Backed by counters and a short rolling window maintained inside `SignalExporter` — no additional storage
+- Read-only; no writes or config changes exposed
+
+**Crates:**
+```toml
+axum = "0.7"
+prometheus = "0.13"
+```

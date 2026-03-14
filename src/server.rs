@@ -85,8 +85,14 @@ impl KeelMemory for KeelService {
             .await
             .map_err(to_status)?;
 
+        let event_type = if results.is_empty() {
+            SignalEventType::Miss
+        } else {
+            SignalEventType::Hit
+        };
+
         self.signal.emit(SignalEvent {
-            event_type: SignalEventType::Hit,
+            event_type,
             session_id: String::new(),
             chunk_id: None,
             query_embedding: Some(query),
