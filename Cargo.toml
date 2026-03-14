@@ -10,7 +10,6 @@ tokio = { version = "1", features = ["full"] }
 tonic = "0.11"               # gRPC server
 prost = "0.12"               # protobuf codegen
 sled = "0.34"                # local persistent KV store (or redb)
-usearch = "2"                # HNSW vector index (Rust bindings)
 flatbuffers = "23"           # zero-copy serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -44,7 +44,7 @@ gRPC client → KeelServer (server.rs)
              KeelService (implements KeelMemory tonic trait)
                   ↓ delegates to
              MemoryRegistry (registry.rs)
-             ├── HnswIndex (index.rs)     ← in-memory HNSW via usearch
+             ├── FlatIndex (index.rs)     ← pure-Rust in-memory flat vector index
              └── sled::Db                 ← persistent KV store
                   ↓ emits to
              SignalExporter (signal.rs)   ← async mpsc → JSONL file
@@ -56,20 +56,20 @@ gRPC client → KeelServer (server.rs)
 
 ### Embedding encoding
 
-Embeddings are passed as `bytes` on the wire. The convention throughout the codebase is **little-endian f32**. Use `registry::f32_to_bytes` and `registry::bytes_to_f32` for conversion. Both the server (decoding `SearchRequest.query_embedding`) and registry (storing/rebuilding the HNSW index) must use this same convention.
+Embeddings are passed as `bytes` on the wire. The convention throughout the codebase is **little-endian f32**. Use `registry::f32_to_bytes` and `registry::bytes_to_f32` for conversion. Both the server (decoding `SearchRequest.query_embedding`) and registry (storing/rebuilding the FlatIndex) must use this same convention.
 
 ### MemoryRegistry internals
 
-- `HnswIndex` is wrapped in `Arc<tokio::sync::Mutex<>>`. Never hold the lock across an `.await` — acquire, do the work, drop.
+- `FlatIndex` is wrapped in `Arc<tokio::sync::Mutex<>>`. Never hold the lock across an `.await` — acquire, do the work, drop.
 - `sled::Db` is `Clone + Send + Sync`. Sled operations are synchronous.
-- On startup, `MemoryRegistry::new` rebuilds the HNSW index by scanning sled (best-effort; does not re-check TTL).
+- On startup, `MemoryRegistry::new` rebuilds the FlatIndex by scanning sled (best-effort; does not re-check TTL).
 - TTL is checked lazily on read: if `created_at_ms + ttl_ms < now_ms`, the chunk is deleted and `None` is returned.
 - `evict_session` does a full sled scan — O(n). Acceptable for Phase 1.
 
 ### What is not yet wired
 
 - `EvictionPolicy` / `LruEvictionPolicy` (`eviction.rs`) — the trait exists and is correct but is not called from the registry. Capacity enforcement is a TODO.
-- `VectorIndex` (`index.rs`) — the async wrapper used by integration tests; not used in the production path (the registry uses `HnswIndex` directly).
+- `VectorIndex` (`index.rs`) — the async wrapper used by integration tests; not used in the production path (the registry uses `FlatIndex` directly).
 - Unix socket transport — config currently binds TCP. Plan calls for Unix socket for K8s DaemonSet use (Phase 2+).
 
 ## Phase plan

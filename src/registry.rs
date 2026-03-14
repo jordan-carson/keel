@@ -1,8 +1,8 @@
-// MemoryRegistry: HNSW in-memory index + sled persistent store
+// MemoryRegistry: FlatIndex in-memory index + sled persistent store
 
 use crate::error::{KeelError, Result};
 use crate::eviction::{EvictionPolicy, LruEvictionPolicy};
-use crate::index::HnswIndex;
+use crate::index::FlatIndex;
 use crate::pb::{MemoryChunk, ScoredChunk};
 use crate::signal::now_ms;
 use prost::Message;
@@ -11,25 +11,18 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 pub struct MemoryRegistry {
-    index: Arc<AsyncMutex<HnswIndex>>,
+    index: Arc<AsyncMutex<FlatIndex>>,
     store: sled::Db,
     eviction: Mutex<Box<dyn EvictionPolicy>>,
     max_chunks: usize,
 }
 
 impl MemoryRegistry {
-    pub fn new(
-        data_dir: &str,
-        dim: usize,
-        ef_construction: usize,
-        max_connections: usize,
-        max_chunks: usize,
-    ) -> Result<Self> {
-        std::fs::create_dir_all(data_dir)
-            .map_err(|e| KeelError::Registry(e.to_string()))?;
+    pub fn new(data_dir: &str, dim: usize, max_chunks: usize) -> Result<Self> {
+        std::fs::create_dir_all(data_dir).map_err(|e| KeelError::Registry(e.to_string()))?;
 
         let store = sled::open(data_dir)?;
-        let mut index = HnswIndex::new(dim, ef_construction, max_connections);
+        let mut index = FlatIndex::new(dim);
 
         // Rebuild HNSW index and eviction state from persisted data on startup
         let eviction_policy: Box<dyn EvictionPolicy> = Box::new(LruEvictionPolicy::new());
@@ -107,7 +100,12 @@ impl MemoryRegistry {
 
     /// Search returns results ordered by cosine similarity (1.0 = identical).
     /// `min_score` is a minimum similarity threshold in [0.0, 1.0].
-    pub async fn search(&self, query: &[f32], top_k: usize, min_score: f32) -> Result<Vec<ScoredChunk>> {
+    pub async fn search(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        min_score: f32,
+    ) -> Result<Vec<ScoredChunk>> {
         let raw_results = {
             let index = self.index.lock().await;
             index.search(query, top_k)?
@@ -122,7 +120,10 @@ impl MemoryRegistry {
                 continue;
             }
             if let Some(chunk) = self.read(&id).await? {
-                scored.push(ScoredChunk { chunk: Some(chunk), score: similarity });
+                scored.push(ScoredChunk {
+                    chunk: Some(chunk),
+                    score: similarity,
+                });
             }
         }
         Ok(scored)

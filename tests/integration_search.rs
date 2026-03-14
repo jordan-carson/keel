@@ -5,7 +5,7 @@ use keel::index::VectorIndex;
 #[tokio::test]
 async fn test_add_and_search() {
     let dim = 4;
-    let index = VectorIndex::new(dim, 16, 200).expect("Failed to create index");
+    let index = VectorIndex::new(dim).expect("Failed to create index");
     
     // Add some vectors
     let vectors = vec![
@@ -31,7 +31,7 @@ async fn test_add_and_search() {
 #[tokio::test]
 async fn test_dimension_mismatch() {
     let dim = 4;
-    let index = VectorIndex::new(dim, 16, 200).expect("Failed to create index");
+    let index = VectorIndex::new(dim).expect("Failed to create index");
     
     // Try to add vector with wrong dimension
     let result = index.add("vec_1", &[1.0, 2.0, 3.0]).await;
@@ -41,7 +41,7 @@ async fn test_dimension_mismatch() {
 #[tokio::test]
 async fn test_search_dimension_mismatch() {
     let dim = 4;
-    let index = VectorIndex::new(dim, 16, 200).expect("Failed to create index");
+    let index = VectorIndex::new(dim).expect("Failed to create index");
     
     // Add a vector
     index.add("vec_0", &[1.0, 0.0, 0.0, 0.0]).await.expect("Failed to add");
@@ -54,7 +54,7 @@ async fn test_search_dimension_mismatch() {
 #[tokio::test]
 async fn test_search_k_greater_than_size() {
     let dim = 4;
-    let index = VectorIndex::new(dim, 16, 200).expect("Failed to create index");
+    let index = VectorIndex::new(dim).expect("Failed to create index");
     
     // Add only one vector
     index.add("vec_0", &[1.0, 0.0, 0.0, 0.0]).await.expect("Failed to add");
@@ -69,7 +69,7 @@ async fn test_search_k_greater_than_size() {
 #[tokio::test]
 async fn test_index_size() {
     let dim = 4;
-    let index = VectorIndex::new(dim, 16, 200).expect("Failed to create index");
+    let index = VectorIndex::new(dim).expect("Failed to create index");
     
     // Check empty size
     let size = index.size().await.expect("Failed to get size");

@@ -22,14 +22,6 @@ pub struct Config {
     #[clap(long, default_value = "1536")]
     pub vector_dim: usize,
 
-    /// HNSW m parameter
-    #[clap(long, default_value = "16")]
-    pub hnsw_m: usize,
-
-    /// HNSW ef_construction parameter
-    #[clap(long, default_value = "200")]
-    pub hnsw_ef_construction: usize,
-
     /// Path for the signal JSONL output file
     #[clap(long, default_value = "./signals.jsonl")]
     pub signal_output_path: String,

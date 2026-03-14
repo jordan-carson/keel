@@ -1,10 +1,8 @@
-// HNSW vector index wrapper around usearch
+// Pure-Rust flat vector index for semantic search
+// Replaces usearch HNSW index with a simple linear search implementation
 
 use crate::error::{KeelError, Result};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use usearch::{Index, IndexOptions, MetricKind};
 
 #[allow(dead_code)]
 /// Result from a vector similarity search
@@ -13,18 +11,17 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-#[allow(dead_code)]
-/// Async wrapper around HnswIndex, safe for shared use across tasks
+/// Async wrapper around FlatIndex, safe for shared use across tasks
 pub struct VectorIndex {
-    inner: Arc<Mutex<HnswIndex>>,
+    inner: std::sync::Arc<tokio::sync::Mutex<FlatIndex>>,
 }
 
 #[allow(dead_code)]
 impl VectorIndex {
-    pub fn new(dimensions: usize, max_connections: usize, ef_construction: usize) -> Result<Self> {
-        let inner = HnswIndex::new(dimensions, ef_construction, max_connections);
+    pub fn new(dimensions: usize) -> Result<Self> {
+        let inner = FlatIndex::new(dimensions);
         Ok(Self {
-            inner: Arc::new(Mutex::new(inner)),
+            inner: std::sync::Arc::new(tokio::sync::Mutex::new(inner)),
         })
     }
 
@@ -45,59 +42,27 @@ impl VectorIndex {
     }
 }
 
-/// HNSW vector index for semantic search, wrapping usearch
-pub struct HnswIndex {
-    /// The underlying usearch index
-    index: Index,
+/// Flat vector index for semantic search using cosine similarity
+/// Uses linear search - simple but effective for datasets that fit in memory
+pub struct FlatIndex {
     /// Vector dimensions
     dimensions: usize,
-    /// Map from string IDs to usearch u64 keys
-    id_map: HashMap<String, u64>,
-    /// Reverse map from usearch u64 keys back to string IDs (O(1) lookup in search)
-    key_to_id: HashMap<u64, String>,
-    /// Counter for generating unique keys
-    key_counter: u64,
+    /// Map from ID to normalized vector storage
+    vectors: HashMap<String, Vec<f32>>,
 }
 
-impl HnswIndex {
-    /// Create a new HNSW index with the given parameters
-    ///
-    /// # Arguments
-    /// * `dimensions` - The dimensionality of the vectors
-    /// * `ef_construction` - The construction-time search depth (default 200)
-    /// * `max_connections` - Maximum connections per node in the graph (default 16)
-    ///
-    /// # Returns
-    /// A new HnswIndex instance
-    pub fn new(dimensions: usize, ef_construction: usize, max_connections: usize) -> Self {
-        let mut opts = IndexOptions::default();
-        opts.dimensions = dimensions;
-        opts.metric = MetricKind::Cos;
-        // Use expansion_add for ef_construction-like behavior
-        opts.expansion_add = ef_construction;
-        // Use connectivity for max_connections
-        opts.connectivity = max_connections;
-
-        let index = Index::new(&opts).expect("Failed to create usearch index");
-        index.reserve(1024).expect("Failed to reserve usearch capacity");
-
+impl FlatIndex {
+    /// Create a new flat index with the given dimensions
+    pub fn new(dimensions: usize) -> Self {
         Self {
-            index,
             dimensions,
-            id_map: HashMap::new(),
-            key_to_id: HashMap::new(),
-            key_counter: 0,
+            vectors: HashMap::new(),
         }
     }
 
     /// Insert a vector into the index with the given ID
     ///
-    /// # Arguments
-    /// * `id` - Unique string identifier for the vector
-    /// * `vector` - The vector data as a slice of f32 values
-    ///
-    /// # Errors
-    /// Returns an error if the vector dimensions don't match
+    /// Vectors are normalized for cosine similarity search
     pub fn insert(&mut self, id: &str, vector: &[f32]) -> Result<()> {
         if vector.len() != self.dimensions {
             return Err(KeelError::Index(format!(
@@ -107,41 +72,16 @@ impl HnswIndex {
             )));
         }
 
-        // Grow capacity if needed
-        if self.index.size() >= self.index.capacity() {
-            let new_cap = (self.index.capacity() * 2).max(1024);
-            self.index
-                .reserve(new_cap)
-                .map_err(|e| KeelError::Index(e.to_string()))?;
-        }
+        // Normalize the vector for cosine similarity
+        let normalized = normalize(vector);
 
-        // Generate a unique u64 key for this ID
-        let key = self.key_counter;
-        self.key_counter += 1;
-
-        // Add to usearch index
-        self.index
-            .add(key, vector)
-            .map_err(|e| KeelError::Index(e.to_string()))?;
-
-        // Store both directions of the mapping
-        self.id_map.insert(id.to_string(), key);
-        self.key_to_id.insert(key, id.to_string());
-
+        self.vectors.insert(id.to_string(), normalized);
         Ok(())
     }
 
-    /// Search for the top-k nearest neighbors
+    /// Search for the top-k nearest neighbors using cosine similarity
     ///
-    /// # Arguments
-    /// * `query` - The query vector
-    /// * `top_k` - Number of results to return
-    ///
-    /// # Returns
-    /// A vector of (id, score) tuples, sorted by score descending
-    ///
-    /// # Errors
-    /// Returns an error if the query vector dimensions don't match
+    /// Returns results sorted by score descending (1.0 = identical)
     pub fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(String, f32)>> {
         if query.len() != self.dimensions {
             return Err(KeelError::Index(format!(
@@ -151,81 +91,70 @@ impl HnswIndex {
             )));
         }
 
-        let results = self
-            .index
-            .search(query, top_k)
-            .map_err(|e| KeelError::Index(e.to_string()))?;
+        // Normalize query vector
+        let normalized_query = normalize(query);
 
-        // Convert u64 keys back to string IDs via reverse map — O(1) per result
-        let keys_len = results.keys.len();
-        let mut output = Vec::with_capacity(keys_len);
+        // Compute cosine similarity with all vectors
+        let mut scores: Vec<(String, f32)> = self
+            .vectors
+            .iter()
+            .map(|(id, vec)| {
+                let similarity = dot_product(&normalized_query, vec);
+                (id.clone(), similarity)
+            })
+            .collect();
 
-        for i in 0..keys_len {
-            let key = results.keys[i];
-            let distance = results.distances[i];
-            if let Some(id) = self.key_to_id.get(&key) {
-                output.push((id.clone(), distance));
-            }
-        }
+        // Sort by score descending
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        Ok(output)
+        // Return top k
+        scores.truncate(top_k);
+        Ok(scores)
     }
 
     /// Remove a vector from the index by its ID
-    ///
-    /// # Arguments
-    /// * `id` - The ID of the vector to remove
-    ///
-    /// # Errors
-    /// Returns an error if the removal fails
     pub fn remove(&mut self, id: &str) -> Result<()> {
-        if let Some(key) = self.id_map.remove(id) {
-            self.key_to_id.remove(&key);
-            self.index
-                .remove(key)
-                .map_err(|e| KeelError::Index(e.to_string()))?;
-        }
+        self.vectors.remove(id);
         Ok(())
     }
 
     /// Check if the index contains a vector with the given ID
-    ///
-    /// # Arguments
-    /// * `id` - The ID to check
-    ///
-    /// # Returns
-    /// True if the ID exists in the index
     #[allow(dead_code)]
     pub fn contains(&self, id: &str) -> bool {
-        self.id_map.contains_key(id)
+        self.vectors.contains_key(id)
     }
 
     /// Get the number of vectors in the index
-    ///
-    /// # Returns
-    /// The number of vectors stored
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.index.size()
+        self.vectors.len()
     }
 
     /// Check if the index is empty
-    ///
-    /// # Returns
-    /// True if the index contains no vectors
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.index.size() == 0
+        self.vectors.is_empty()
     }
 
     /// Get the dimensions of vectors in this index
-    ///
-    /// # Returns
-    /// The vector dimensionality
     #[allow(dead_code)]
     pub fn dimensions(&self) -> usize {
         self.dimensions
     }
+}
+
+/// Normalize a vector to unit length (L2 norm = 1)
+fn normalize(vector: &[f32]) -> Vec<f32> {
+    let magnitude = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if magnitude == 0.0 {
+        return vec![0.0; vector.len()];
+    }
+    vector.iter().map(|x| x / magnitude).collect()
+}
+
+/// Compute dot product of two equal-length vectors
+fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 #[cfg(test)]
@@ -233,15 +162,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hnsw_index_create() {
-        let index = HnswIndex::new(128, 200, 16);
+    fn test_flat_index_create() {
+        let index = FlatIndex::new(128);
         assert_eq!(index.dimensions(), 128);
         assert!(index.is_empty());
     }
 
     #[test]
-    fn test_hnsw_index_insert_and_search() {
-        let mut index = HnswIndex::new(4, 200, 16);
+    fn test_flat_index_insert_and_search() {
+        let mut index = FlatIndex::new(4);
 
         // Insert some vectors
         index.insert("vec1", &[1.0, 0.0, 0.0, 0.0]).unwrap();
@@ -254,13 +183,14 @@ mod tests {
         let results = index.search(&[1.0, 0.0, 0.0, 0.0], 2).unwrap();
 
         assert!(!results.is_empty());
-        // First result should be vec1 (identical)
+        // First result should be vec1 (identical) with score 1.0
         assert_eq!(results[0].0, "vec1");
+        assert!((results[0].1 - 1.0).abs() < 0.001);
     }
 
     #[test]
-    fn test_hnsw_index_contains() {
-        let mut index = HnswIndex::new(4, 200, 16);
+    fn test_flat_index_contains() {
+        let mut index = FlatIndex::new(4);
 
         assert!(!index.contains("vec1"));
 
@@ -271,8 +201,8 @@ mod tests {
     }
 
     #[test]
-    fn test_hnsw_index_remove() {
-        let mut index = HnswIndex::new(4, 200, 16);
+    fn test_flat_index_remove() {
+        let mut index = FlatIndex::new(4);
 
         index.insert("vec1", &[1.0, 0.0, 0.0, 0.0]).unwrap();
         assert!(index.contains("vec1"));
@@ -282,8 +212,8 @@ mod tests {
     }
 
     #[test]
-    fn test_hnsw_index_dimension_mismatch() {
-        let mut index = HnswIndex::new(4, 200, 16);
+    fn test_flat_index_dimension_mismatch() {
+        let mut index = FlatIndex::new(4);
 
         // Try to insert wrong dimension
         let result = index.insert("vec1", &[1.0, 2.0, 3.0]);
@@ -292,5 +222,25 @@ mod tests {
         // Try to search with wrong dimension
         let result = index.search(&[1.0, 2.0, 3.0], 1);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_normalize() {
+        let v = &[3.0, 4.0];
+        let normalized = normalize(v);
+        // Should be [0.6, 0.8] with magnitude 1.0
+        assert!((normalized[0] - 0.6).abs() < 0.001);
+        assert!((normalized[1] - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_dot_product() {
+        let a = &[1.0, 0.0];
+        let b = &[1.0, 0.0];
+        assert!((dot_product(a, b) - 1.0).abs() < 0.001);
+
+        let a = &[1.0, 0.0];
+        let b = &[0.0, 1.0];
+        assert!((dot_product(a, b) - 0.0).abs() < 0.001);
     }
 }

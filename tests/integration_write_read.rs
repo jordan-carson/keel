@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 fn make_registry() -> MemoryRegistry {
     let path = format!("/tmp/keel-test-{}", Uuid::new_v4());
-    MemoryRegistry::new(&path, 4, 200, 16, 10_000).expect("Failed to create registry")
+    MemoryRegistry::new(&path, 4, 10_000).expect("Failed to create registry")
 }
 
 fn chunk(payload: &[u8], session_id: &str) -> MemoryChunk {
