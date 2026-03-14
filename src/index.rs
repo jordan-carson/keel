@@ -6,12 +6,14 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use usearch::{Index, IndexOptions, MetricKind};
 
+#[allow(dead_code)]
 /// Result from a vector similarity search
 pub struct SearchResult {
     pub id: String,
     pub score: f32,
 }
 
+#[allow(dead_code)]
 /// Async wrapper around HnswIndex, safe for shared use across tasks
 pub struct VectorIndex {
     inner: Arc<Mutex<HnswIndex>>,
@@ -193,6 +195,7 @@ impl HnswIndex {
     ///
     /// # Returns
     /// True if the ID exists in the index
+    #[allow(dead_code)]
     pub fn contains(&self, id: &str) -> bool {
         self.id_map.contains_key(id)
     }
@@ -201,6 +204,7 @@ impl HnswIndex {
     ///
     /// # Returns
     /// The number of vectors stored
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.index.size()
     }
@@ -209,6 +213,7 @@ impl HnswIndex {
     ///
     /// # Returns
     /// True if the index contains no vectors
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.index.size() == 0
     }
@@ -217,6 +222,7 @@ impl HnswIndex {
     ///
     /// # Returns
     /// The vector dimensionality
+    #[allow(dead_code)]
     pub fn dimensions(&self) -> usize {
         self.dimensions
     }

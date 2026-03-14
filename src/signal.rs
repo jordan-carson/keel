@@ -1,85 +1,72 @@
-// SignalExporter: Async training signal/log exporter
+// SignalExporter: async training signal emitter with JSONL writer
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrainingSignal {
-    pub step: u64,
-    pub loss: f32,
-    pub learning_rate: f32,
-    pub timestamp: u64,
-    pub metadata: Option<std::collections::HashMap<String, String>>,
+#[serde(rename_all = "snake_case")]
+pub enum SignalEventType {
+    Write,
+    Hit,
+    Miss,
+    Eviction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalEvent {
+    pub event_type: SignalEventType,
+    pub session_id: String,
+    pub chunk_id: Option<String>,
+    pub query_embedding: Option<Vec<f32>>,
+    pub timestamp_ms: u64,
 }
 
 pub struct SignalExporter {
-    signals: Arc<RwLock<Vec<TrainingSignal>>>,
-    export_interval_secs: u64,
+    tx: mpsc::Sender<SignalEvent>,
 }
 
 impl SignalExporter {
-    pub fn new(export_interval_secs: u64) -> Self {
-        Self {
-            signals: Arc::new(RwLock::new(Vec::new())),
-            export_interval_secs,
-        }
-    }
-
-    pub async fn emit(&self, signal: TrainingSignal) {
-        let mut signals = self.signals.write().await;
-        signals.push(signal);
-    }
-
-    pub async fn get_signals(&self) -> Vec<TrainingSignal> {
-        let signals = self.signals.read().await;
-        signals.clone()
-    }
-
-    pub async fn clear(&self) {
-        let mut signals = self.signals.write().await;
-        signals.clear();
-    }
-
-    pub async fn export_and_clear(&self) -> Vec<TrainingSignal> {
-        let mut signals = self.signals.write().await;
-        let exported = signals.clone();
-        signals.clear();
-        exported
-    }
-
-    /// Start background export task
-    pub async fn start_background_export<F>(&self, callback: F)
-    where
-        F: Fn(Vec<TrainingSignal>) + Send + Sync + 'static,
-    {
-        let signals = Arc::clone(&self.signals);
-        let interval_secs = self.export_interval_secs;
+    pub fn new(output_path: &str) -> Self {
+        let (tx, mut rx) = mpsc::channel::<SignalEvent>(1024);
+        let path = output_path.to_string();
 
         tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(interval_secs));
-            
-            loop {
-                ticker.tick().await;
-                
-                let to_export = {
-                    let mut s = signals.write().await;
-                    let exported = s.clone();
-                    s.clear();
-                    exported
-                };
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::error!("SignalExporter: failed to open {}: {}", path, e);
+                    return;
+                }
+            };
 
-                if !to_export.is_empty() {
-                    callback(to_export);
+            while let Some(event) = rx.recv().await {
+                if let Ok(line) = serde_json::to_string(&event) {
+                    let entry = format!("{}\n", line);
+                    if let Err(e) = file.write_all(entry.as_bytes()).await {
+                        tracing::warn!("SignalExporter: write error: {}", e);
+                    }
                 }
             }
         });
+
+        Self { tx }
+    }
+
+    /// Non-blocking fire-and-forget emit. Drops the event if the channel is full.
+    pub fn emit(&self, event: SignalEvent) {
+        let _ = self.tx.try_send(event);
     }
 }
 
-impl Default for SignalExporter {
-    fn default() -> Self {
-        Self::new(60) // Default 60 second export interval
-    }
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }

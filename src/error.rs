@@ -21,6 +21,12 @@ pub enum KeelError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Storage error: {0}")]
+    Storage(#[from] sled::Error),
+
+    #[error("Decode error: {0}")]
+    Decode(#[from] prost::DecodeError),
 }
 
 pub type Result<T> = std::result::Result<T, KeelError>;

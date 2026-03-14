@@ -30,6 +30,10 @@ pub struct Config {
     #[clap(long, default_value = "200")]
     pub hnsw_ef_construction: usize,
 
+    /// Path for the signal JSONL output file
+    #[clap(long, default_value = "./signals.jsonl")]
+    pub signal_output_path: String,
+
     /// Enable verbose logging
     #[clap(long, short, default_value = "false")]
     pub verbose: bool,
