@@ -1,27 +1,33 @@
+[workspace]
+members = [
+    ".",
+    "crates/keel-proto",
+    "crates/keel-signal",
+    "crates/keel-store",
+    "crates/keel-cluster",
+]
+
 [package]
 name = "keel"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [dependencies]
+keel-proto  = { path = "crates/keel-proto" }
+keel-signal = { path = "crates/keel-signal" }
+keel-store  = { path = "crates/keel-store" }
+keel-cluster = { path = "crates/keel-cluster" }
+
 tokio = { version = "1", features = ["full"] }
-tonic = "0.11"               # gRPC server
-prost = "0.12"               # protobuf codegen
-sled = "0.34"                # local persistent KV store (or redb)
-flatbuffers = "23"           # zero-copy serialization
+tonic = "0.11"
+prost = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-uuid = { version = "1", features = ["v4"] }
-clap = { version = "4", features = ["derive"] }   # CLI config
+clap = { version = "4", features = ["derive", "env"] }
 thiserror = "1"
 
 [dev-dependencies]
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-
-[build-dependencies]
-tonic-build = "0.11"

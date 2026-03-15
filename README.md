@@ -11,10 +11,10 @@ Secondary purpose: generate training signal (retrieval patterns, eviction outcom
 ```mermaid
 flowchart TD
     A[Inference Pod] -->|loopback gRPC| B[keel sidecar daemon]
-    B --> C[In-memory HNSW vector index\nL1: hot retrieval]
-    B --> D[Local sled KV store\nL2: persistent store]
+    B --> C[Hot tier: FlatIndex\nin-memory cosine search]
+    B --> D[TantivyStore\nBM25 + embedding terms]
     B -->|async, non-blocking| E[Training signal exporter\nJSONL file]
-    D -.->|cross-node cache miss| F[keel cluster\nother nodes]
+    D -.->|session routing| F[keel cluster\nPhase 2 peers]
 ```
 
 ### Request path
@@ -24,8 +24,9 @@ flowchart TD
     A[gRPC client] --> B[KeelServer]
     B --> C[KeelService\nimplements KeelMemory tonic trait]
     C --> D[MemoryRegistry]
-    D --> E[HnswIndex\nin-memory HNSW via usearch]
-    D --> F[sled::Db\npersistent KV]
+    D --> E[FlatIndex hot tier\nin-memory cosine scan]
+    D --> F[TantivyStore\nBM25 + embedding term search]
+    D -->|session routing| H[ClusterManager\nPhase 2 peer forwarding]
     D -->|emit| G[SignalExporter\nasync mpsc → JSONL file]
 ```
 
@@ -35,7 +36,7 @@ Defined in `proto/keel.proto`:
 
 | RPC | Description |
 |---|---|
-| `Write` | Store a `MemoryChunk` in both the HNSW index and sled |
+| `Write` | Store a `MemoryChunk`; Phase 2 forwards to session-owning peer if cluster is active |
 | `Read` | Fetch a chunk by ID; returns `None` if expired (TTL) |
 | `SemanticSearch` | Top-k nearest-neighbor search over stored embeddings |
 | `Evict` | Remove all chunks belonging to a session |
@@ -113,8 +114,8 @@ keel is designed to run as a DaemonSet — one instance per inference node. Infe
 | Phase | Status | Description |
 |---|---|---|
 | 1 | ✅ Complete | Single-node daemon: write, read, semantic search, TTL, session eviction, health, signal export |
-| 1.5 | 🔜 Next | **Tantivy storage layer** — replace usearch + sled with Tantivy as the segment/storage backend |
-| 2 | Planned | Multi-node gossip replication; session affinity routing |
+| 1.5 | ✅ Complete | **Tantivy storage layer** — FlatIndex hot tier + TantivyStore (BM25 + quantized embedding terms) |
+| 2 | 🔜 In Progress | **Multi-node routing** — session-affinity consistent-hash routing, peer forwarding via tonic client |
 | 3 | Planned | KV cache prefix sharing backed by memory-mapped files |
 | 4 | Planned | S3 training signal export as Parquet |
 | 5 | Planned | **Observer UI** — lightweight HTTP dashboard for ML engineers to monitor keel during training runs via `kubectl port-forward` |
@@ -154,6 +155,43 @@ flowchart TD
 | Persistence | `sled` KV store | Tantivy segment store |
 | Hot session tier | None | In-memory flat index (existing `VectorIndex`) |
 | `MemoryRegistry` API | Unchanged | Unchanged |
+
+### Phase 2 — Multi-node Routing (In Progress)
+
+Session-affinity routing so each `session_id` is consistently directed to the same node, eliminating cross-node lookup and enabling incremental replication.
+
+**Design:**
+
+```mermaid
+flowchart LR
+    A[Client Pod] -->|Write session-X| B[keel node-0]
+    B -->|Hash session-X mod nodes| C{Owner?}
+    C -->|Yes: local| D[MemoryRegistry]
+    C -->|No: forward| E[keel node-1\nowner of session-X]
+    E --> F[MemoryRegistry]
+```
+
+**What's implemented:**
+
+| Component | Status | Notes |
+|---|---|---|
+| `router.rs` / `SessionRouter` | ✅ Done | Consistent-hash (FNV) session → node mapping |
+| `cluster.rs` / `ClusterManager` | ✅ Done | Lazy tonic client pool per peer; `get_client(addr)` |
+| `server.rs` forwarding | ✅ Done | `Write` forwards to peer; falls back to local on peer unavailable |
+| Peer discovery | Config-driven | Set `KEEL_PEERS=node-1:50051,node-2:50051` or `--peers` flag |
+| Fan-out `SemanticSearch` | TODO | Currently searches local node only; cross-node fan-out in next iteration |
+| Gossip / health | TODO | Peer failure detection; for now assumes peers are healthy |
+
+**Kubernetes deployment:**
+```yaml
+env:
+  - name: KEEL_NODE_ID
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+  - name: KEEL_PEERS
+    value: "keel-node-1.keel.svc:50051,keel-node-2.keel.svc:50051"
+```
 
 ### Phase 5 — Observer UI
 

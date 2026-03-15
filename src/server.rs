@@ -1,25 +1,29 @@
 // gRPC server: tonic KeelMemory service implementation
+//
+// Phase 2: when a ClusterManager is present, writes and searches are forwarded
+// to the owning node based on session_id consistent-hash routing.
 
 use crate::config::Config;
 use crate::error::{KeelError, Result};
-use crate::pb::keel_memory_server::{KeelMemory, KeelMemoryServer};
-use crate::pb::{
+use keel_cluster::cluster::ClusterManager;
+use keel_proto::pb::keel_memory_server::{KeelMemory, KeelMemoryServer};
+use keel_proto::pb::{
     EvictRequest, EvictResponse, HealthRequest, HealthResponse, ReadRequest, ReadResponse,
     SearchRequest, SearchResponse, WriteRequest, WriteResponse,
 };
-use crate::registry::{bytes_to_f32, MemoryRegistry};
-use crate::signal::{now_ms, SignalEvent, SignalEventType, SignalExporter};
+use keel_signal::{now_ms, SignalEvent, SignalEventType, SignalExporter};
+use keel_store::registry::{bytes_to_f32, MemoryRegistry};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-fn to_status(e: KeelError) -> Status {
+fn to_status<E: std::fmt::Display>(e: E) -> Status {
     Status::internal(e.to_string())
 }
 
-/// Implements the KeelMemory gRPC service, delegating to MemoryRegistry.
 pub struct KeelService {
     registry: Arc<MemoryRegistry>,
     signal: Arc<SignalExporter>,
+    cluster: Option<Arc<ClusterManager>>,
 }
 
 #[tonic::async_trait]
@@ -34,6 +38,29 @@ impl KeelMemory for KeelService {
             .ok_or_else(|| Status::invalid_argument("missing chunk"))?;
 
         let session_id = chunk.session_id.clone();
+
+        if let Some(cluster) = &self.cluster {
+            if !cluster.is_local_session(&session_id) {
+                let owner = cluster.node_for_session(&session_id);
+                tracing::debug!(
+                    "Forwarding write for session {} to peer {}",
+                    session_id,
+                    owner
+                );
+                if let Some(mut client) = cluster.get_client(&owner).await {
+                    return client
+                        .write(Request::new(WriteRequest { chunk: Some(chunk) }))
+                        .await
+                        .map_err(|e| Status::unavailable(format!("Peer {}: {}", owner, e)));
+                }
+                tracing::warn!(
+                    "Peer {} unavailable for session {}; handling locally",
+                    owner,
+                    session_id
+                );
+            }
+        }
+
         let id = self.registry.write(chunk).await.map_err(to_status)?;
 
         self.signal.emit(SignalEvent {
@@ -129,23 +156,33 @@ impl KeelMemory for KeelService {
         _request: Request<HealthRequest>,
     ) -> std::result::Result<Response<HealthResponse>, Status> {
         let chunks_stored = self.registry.count().await.map_err(to_status)?;
+        let peer_count = self
+            .cluster
+            .as_ref()
+            .map(|c| c.peer_count())
+            .unwrap_or(0);
         Ok(Response::new(HealthResponse {
-            status: "ok".to_string(),
+            status: format!("ok (peers: {})", peer_count),
             chunks_stored,
         }))
     }
 }
 
-/// Owns the tonic server and binds it to the configured address.
 pub struct KeelServer {
     config: Config,
     registry: Arc<MemoryRegistry>,
     signal: Arc<SignalExporter>,
+    cluster: Option<Arc<ClusterManager>>,
 }
 
 impl KeelServer {
-    pub fn new(config: Config, registry: Arc<MemoryRegistry>, signal: Arc<SignalExporter>) -> Self {
-        Self { config, registry, signal }
+    pub fn new(
+        config: Config,
+        registry: Arc<MemoryRegistry>,
+        signal: Arc<SignalExporter>,
+        cluster: Option<Arc<ClusterManager>>,
+    ) -> Self {
+        Self { config, registry, signal, cluster }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -156,6 +193,7 @@ impl KeelServer {
         let service = KeelService {
             registry: self.registry,
             signal: self.signal,
+            cluster: self.cluster,
         };
 
         tracing::info!("Keel gRPC server listening on {}", addr);

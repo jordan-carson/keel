@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 fn make_registry() -> MemoryRegistry {
     let path = format!("/tmp/keel-test-{}", Uuid::new_v4());
-    MemoryRegistry::new(&path, 4, 10_000).expect("Failed to create registry")
+    // (data_dir, dim, hot_tier_max, max_chunks)
+    MemoryRegistry::new(&path, 4, 1_000, 10_000).expect("Failed to create registry")
 }
 
 fn chunk(payload: &[u8], session_id: &str) -> MemoryChunk {
@@ -66,8 +67,8 @@ async fn test_write_with_embedding_and_search() {
 
     // Search for nearest to [1, 0, 0, 0]
     let query = [1.0f32, 0.0, 0.0, 0.0];
-    let results = registry.search(&query, 2, 1.0).await.expect("search failed");
-    // usearch cosine distance 0 = identical; filter is score > min_score so min_score=1.0 passes all
+    // min_score = 0.0: return all results with non-negative similarity
+    let results = registry.search(&query, 2, 0.0).await.expect("search failed");
     assert!(!results.is_empty());
 }
 

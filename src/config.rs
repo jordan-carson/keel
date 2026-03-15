@@ -10,11 +10,11 @@ pub struct Config {
     #[clap(long, default_value = "127.0.0.1:50051")]
     pub bind_address: String,
 
-    /// Data directory for persistent storage
+    /// Data directory for persistent Tantivy storage
     #[clap(long, default_value = "./data")]
     pub data_dir: String,
 
-    /// Maximum memory entries to store
+    /// Maximum memory chunks to store before LRU eviction triggers
     #[clap(long, default_value = "100000")]
     pub max_entries: usize,
 
@@ -22,9 +22,22 @@ pub struct Config {
     #[clap(long, default_value = "1536")]
     pub vector_dim: usize,
 
+    /// Maximum vectors to hold in the in-memory hot tier (Phase 1.5 — reserved for future use)
+    #[clap(long, default_value = "10000")]
+    pub hot_tier_max: usize,
+
     /// Path for the signal JSONL output file
     #[clap(long, default_value = "./signals.jsonl")]
     pub signal_output_path: String,
+
+    /// Stable node ID for cluster routing (defaults to $HOSTNAME)
+    #[clap(long, env = "KEEL_NODE_ID")]
+    pub node_id: Option<String>,
+
+    /// Comma-separated list of peer keel gRPC addresses for Phase 2 multi-node routing.
+    /// Example: keel-node-1:50051,keel-node-2:50051
+    #[clap(long, env = "KEEL_PEERS", default_value = "")]
+    pub peers: String,
 
     /// Enable verbose logging
     #[clap(long, short, default_value = "false")]

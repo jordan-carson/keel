@@ -1,0 +1,13 @@
+[package]
+name = "keel-store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+keel-proto = { path = "../keel-proto" }
+tokio = { version = "1", features = ["full"] }
+tantivy = "0.22"
+prost = "0.12"
+tracing = "0.1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
