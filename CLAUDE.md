@@ -114,7 +114,7 @@ The persistent cold tier. Schema:
 - **Phase 1** ✅ complete: single-node gRPC daemon
 - **Phase 1.5** ✅ complete: Tantivy storage (FlatIndex hot tier + TantivyStore)
 - **Phase 2** ✅ complete: session-affinity routing, Write forwarding, SemanticSearch fan-out, dead-peer circuit breaker, hot-tier rebuild + LRU bounding
-- **Phase 3**: KV cache prefix sharing backed by `memmap2`
+- **Phase 3** ✅ complete: KV cache prefix sharing — `KvCacheStore` (memmap2), LRU, TTL, index persistence, `KvWrite`/`KvRead`/`KvEvict` RPCs
 - **Phase 4**: S3 training signal export as Parquet via `arrow`/`parquet` crates
 - **Phase 5**: Observer UI — lightweight HTTP dashboard on port 9091 for `kubectl port-forward` monitoring
 

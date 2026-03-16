@@ -712,6 +712,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "keel-cluster",
+ "keel-kvcache",
  "keel-proto",
  "keel-signal",
  "keel-store",
@@ -733,6 +734,18 @@ dependencies = [
  "keel-proto",
  "tokio",
  "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "keel-kvcache"
+version = "0.1.0"
+dependencies = [
+ "keel-proto",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tracing",
 ]
 

@@ -3,14 +3,20 @@
 // Phase 2 routing:
 //   Write  — forwarded to the session-owning peer; falls back to local on peer failure.
 //   Search — fan-out to all live peers, results merged with local, deduped, top-k returned.
-//   All other RPCs — local only (Read, Evict, Health).
+//   All other Phase 1/1.5 RPCs — local only (Read, Evict, Health).
+//
+// Phase 3 — KV cache prefix sharing:
+//   KvWrite / KvRead / KvEvict — delegated directly to KvCacheStore (no cluster routing;
+//   KV cache slabs are large and node-local by design).
 
 use crate::config::Config;
 use crate::error::{KeelError, Result};
 use keel_cluster::cluster::ClusterManager;
+use keel_kvcache::store::KvCacheStore;
 use keel_proto::pb::keel_memory_server::{KeelMemory, KeelMemoryServer};
 use keel_proto::pb::{
-    EvictRequest, EvictResponse, HealthRequest, HealthResponse, ReadRequest, ReadResponse,
+    EvictRequest, EvictResponse, HealthRequest, HealthResponse, KvEvictRequest, KvEvictResponse,
+    KvReadRequest, KvReadResponse, KvWriteRequest, KvWriteResponse, ReadRequest, ReadResponse,
     SearchRequest, SearchResponse, WriteRequest, WriteResponse,
 };
 use keel_signal::{now_ms, SignalEvent, SignalEventType, SignalExporter};
@@ -27,10 +33,15 @@ pub struct KeelService {
     registry: Arc<MemoryRegistry>,
     signal: Arc<SignalExporter>,
     cluster: Option<Arc<ClusterManager>>,
+    kv_store: Arc<KvCacheStore>,
 }
 
 #[tonic::async_trait]
 impl KeelMemory for KeelService {
+    // ------------------------------------------------------------------ //
+    // Phase 1 / 1.5 — memory chunk RPCs                                  //
+    // ------------------------------------------------------------------ //
+
     async fn write(
         &self,
         request: Request<WriteRequest>,
@@ -122,7 +133,7 @@ impl KeelMemory for KeelService {
         let top_k = req.top_k as usize;
         let min_score = req.min_score;
 
-        // Local search
+        // Local search.
         let mut all_results = self
             .registry
             .search(&query, top_k, min_score)
@@ -192,6 +203,8 @@ impl KeelMemory for KeelService {
         _request: Request<HealthRequest>,
     ) -> std::result::Result<Response<HealthResponse>, Status> {
         let chunks_stored = self.registry.count().await.map_err(to_status)?;
+        let kv_entries_cached = self.kv_store.count() as u64;
+
         let (peer_count, dead_count) = self
             .cluster
             .as_ref()
@@ -208,15 +221,68 @@ impl KeelMemory for KeelService {
             format!("ok (peers: {})", peer_count)
         };
 
-        Ok(Response::new(HealthResponse { status, chunks_stored }))
+        Ok(Response::new(HealthResponse {
+            status,
+            chunks_stored,
+            kv_entries_cached,
+        }))
+    }
+
+    // ------------------------------------------------------------------ //
+    // Phase 3 — KV cache prefix sharing                                   //
+    // ------------------------------------------------------------------ //
+
+    async fn kv_write(
+        &self,
+        request: Request<KvWriteRequest>,
+    ) -> std::result::Result<Response<KvWriteResponse>, Status> {
+        let entry = request
+            .into_inner()
+            .entry
+            .ok_or_else(|| Status::invalid_argument("missing entry"))?;
+
+        let prefix_hash = entry.prefix_hash.clone();
+        self.kv_store.write(&entry).map_err(to_status)?;
+
+        Ok(Response::new(KvWriteResponse { prefix_hash, ok: true }))
+    }
+
+    async fn kv_read(
+        &self,
+        request: Request<KvReadRequest>,
+    ) -> std::result::Result<Response<KvReadResponse>, Status> {
+        let req = request.into_inner();
+        let entry = self
+            .kv_store
+            .read(&req.prefix_hash, &req.model_id)
+            .map_err(to_status)?;
+
+        let found = entry.is_some();
+        Ok(Response::new(KvReadResponse { entry, found }))
+    }
+
+    async fn kv_evict(
+        &self,
+        request: Request<KvEvictRequest>,
+    ) -> std::result::Result<Response<KvEvictResponse>, Status> {
+        let model_id = request.into_inner().model_id;
+        let evicted_count =
+            self.kv_store.evict_model(&model_id).map_err(to_status)?;
+
+        Ok(Response::new(KvEvictResponse { evicted_count }))
     }
 }
+
+// ------------------------------------------------------------------ //
+// KeelServer                                                           //
+// ------------------------------------------------------------------ //
 
 pub struct KeelServer {
     config: Config,
     registry: Arc<MemoryRegistry>,
     signal: Arc<SignalExporter>,
     cluster: Option<Arc<ClusterManager>>,
+    kv_store: Arc<KvCacheStore>,
 }
 
 impl KeelServer {
@@ -225,8 +291,9 @@ impl KeelServer {
         registry: Arc<MemoryRegistry>,
         signal: Arc<SignalExporter>,
         cluster: Option<Arc<ClusterManager>>,
+        kv_store: Arc<KvCacheStore>,
     ) -> Self {
-        Self { config, registry, signal, cluster }
+        Self { config, registry, signal, cluster, kv_store }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -241,6 +308,7 @@ impl KeelServer {
             registry: self.registry,
             signal: self.signal,
             cluster: self.cluster,
+            kv_store: self.kv_store,
         };
 
         tracing::info!("Keel gRPC server listening on {}", addr);

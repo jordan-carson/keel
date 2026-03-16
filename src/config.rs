@@ -22,13 +22,21 @@ pub struct Config {
     #[clap(long, default_value = "1536")]
     pub vector_dim: usize,
 
-    /// Maximum vectors to hold in the in-memory hot tier (Phase 1.5 — reserved for future use)
+    /// Maximum vectors to hold in the in-memory hot tier
     #[clap(long, default_value = "10000")]
     pub hot_tier_max: usize,
 
     /// Path for the signal JSONL output file
     #[clap(long, default_value = "./signals.jsonl")]
     pub signal_output_path: String,
+
+    /// Directory for KV cache prefix-sharing files (Phase 3)
+    #[clap(long, default_value = "./kvcache", env = "KEEL_KV_CACHE_DIR")]
+    pub kv_cache_dir: String,
+
+    /// Maximum number of KV cache entries before LRU eviction
+    #[clap(long, default_value = "1000", env = "KEEL_KV_CACHE_MAX")]
+    pub kv_cache_max_entries: usize,
 
     /// Stable node ID for cluster routing (defaults to $HOSTNAME)
     #[clap(long, env = "KEEL_NODE_ID")]

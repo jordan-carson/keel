@@ -5,6 +5,7 @@ members = [
     "crates/keel-signal",
     "crates/keel-store",
     "crates/keel-cluster",
+    "crates/keel-kvcache",
 ]
 
 [package]
@@ -13,10 +14,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-keel-proto  = { path = "crates/keel-proto" }
-keel-signal = { path = "crates/keel-signal" }
-keel-store  = { path = "crates/keel-store" }
+keel-proto   = { path = "crates/keel-proto" }
+keel-signal  = { path = "crates/keel-signal" }
+keel-store   = { path = "crates/keel-store" }
 keel-cluster = { path = "crates/keel-cluster" }
+keel-kvcache = { path = "crates/keel-kvcache" }
 
 tokio = { version = "1", features = ["full"] }
 tonic = "0.11"

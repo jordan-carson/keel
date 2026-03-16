@@ -97,6 +97,74 @@ pub struct HealthResponse {
     pub status: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub chunks_stored: u64,
+    #[prost(uint64, tag = "3")]
+    pub kv_entries_cached: u64,
+}
+/// A cached KV slab for a specific (model, prefix) pair.
+/// `data` is opaque bytes — keel treats the tensor layout as the caller's concern.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvEntry {
+    /// caller-generated hash of the token prefix
+    #[prost(string, tag = "1")]
+    pub prefix_hash: ::prost::alloc::string::String,
+    /// e.g. "llama-3-8b", "gpt-4"
+    #[prost(string, tag = "2")]
+    pub model_id: ::prost::alloc::string::String,
+    /// number of prefix tokens
+    #[prost(int32, tag = "3")]
+    pub seq_len: i32,
+    /// packed KV tensors
+    #[prost(bytes = "vec", tag = "4")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub created_at_ms: u64,
+    /// 0 = no expiry
+    #[prost(uint64, tag = "6")]
+    pub ttl_ms: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvWriteRequest {
+    #[prost(message, optional, tag = "1")]
+    pub entry: ::core::option::Option<KvEntry>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvWriteResponse {
+    #[prost(string, tag = "1")]
+    pub prefix_hash: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub ok: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvReadRequest {
+    #[prost(string, tag = "1")]
+    pub prefix_hash: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub model_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvReadResponse {
+    #[prost(message, optional, tag = "1")]
+    pub entry: ::core::option::Option<KvEntry>,
+    #[prost(bool, tag = "2")]
+    pub found: bool,
+}
+/// Pass empty model_id to evict all cached entries across all models.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvEvictRequest {
+    #[prost(string, tag = "1")]
+    pub model_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvEvictResponse {
+    #[prost(uint32, tag = "1")]
+    pub evicted_count: u32,
 }
 /// Generated client implementations.
 pub mod keel_memory_client {
@@ -281,6 +349,70 @@ pub mod keel_memory_client {
             req.extensions_mut().insert(GrpcMethod::new("keel.KeelMemory", "Health"));
             self.inner.unary(req, path, codec).await
         }
+        /// Phase 3: KV cache prefix sharing backed by memory-mapped files.
+        pub async fn kv_write(
+            &mut self,
+            request: impl tonic::IntoRequest<super::KvWriteRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::KvWriteResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/keel.KeelMemory/KvWrite");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("keel.KeelMemory", "KvWrite"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn kv_read(
+            &mut self,
+            request: impl tonic::IntoRequest<super::KvReadRequest>,
+        ) -> std::result::Result<tonic::Response<super::KvReadResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/keel.KeelMemory/KvRead");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("keel.KeelMemory", "KvRead"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn kv_evict(
+            &mut self,
+            request: impl tonic::IntoRequest<super::KvEvictRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::KvEvictResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/keel.KeelMemory/KvEvict");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("keel.KeelMemory", "KvEvict"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -310,6 +442,19 @@ pub mod keel_memory_server {
             &self,
             request: tonic::Request<super::HealthRequest>,
         ) -> std::result::Result<tonic::Response<super::HealthResponse>, tonic::Status>;
+        /// Phase 3: KV cache prefix sharing backed by memory-mapped files.
+        async fn kv_write(
+            &self,
+            request: tonic::Request<super::KvWriteRequest>,
+        ) -> std::result::Result<tonic::Response<super::KvWriteResponse>, tonic::Status>;
+        async fn kv_read(
+            &self,
+            request: tonic::Request<super::KvReadRequest>,
+        ) -> std::result::Result<tonic::Response<super::KvReadResponse>, tonic::Status>;
+        async fn kv_evict(
+            &self,
+            request: tonic::Request<super::KvEvictRequest>,
+        ) -> std::result::Result<tonic::Response<super::KvEvictResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct KeelMemoryServer<T: KeelMemory> {
@@ -595,6 +740,142 @@ pub mod keel_memory_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = HealthSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/keel.KeelMemory/KvWrite" => {
+                    #[allow(non_camel_case_types)]
+                    struct KvWriteSvc<T: KeelMemory>(pub Arc<T>);
+                    impl<
+                        T: KeelMemory,
+                    > tonic::server::UnaryService<super::KvWriteRequest>
+                    for KvWriteSvc<T> {
+                        type Response = super::KvWriteResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::KvWriteRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as KeelMemory>::kv_write(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = KvWriteSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/keel.KeelMemory/KvRead" => {
+                    #[allow(non_camel_case_types)]
+                    struct KvReadSvc<T: KeelMemory>(pub Arc<T>);
+                    impl<T: KeelMemory> tonic::server::UnaryService<super::KvReadRequest>
+                    for KvReadSvc<T> {
+                        type Response = super::KvReadResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::KvReadRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as KeelMemory>::kv_read(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = KvReadSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/keel.KeelMemory/KvEvict" => {
+                    #[allow(non_camel_case_types)]
+                    struct KvEvictSvc<T: KeelMemory>(pub Arc<T>);
+                    impl<
+                        T: KeelMemory,
+                    > tonic::server::UnaryService<super::KvEvictRequest>
+                    for KvEvictSvc<T> {
+                        type Response = super::KvEvictResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::KvEvictRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as KeelMemory>::kv_evict(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = KvEvictSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

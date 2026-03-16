@@ -32,6 +32,10 @@ pub mod router {
     pub use keel_cluster::router::*;
 }
 
+pub mod kvcache {
+    pub use keel_kvcache::store::KvCacheStore;
+}
+
 pub mod config;
 pub mod error;
 pub mod server;

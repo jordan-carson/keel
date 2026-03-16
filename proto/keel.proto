@@ -2,12 +2,19 @@ syntax = "proto3";
 package keel;
 
 service KeelMemory {
-  rpc Write(WriteRequest) returns (WriteResponse);
-  rpc Read(ReadRequest) returns (ReadResponse);
-  rpc SemanticSearch(SearchRequest) returns (SearchResponse);
-  rpc Evict(EvictRequest) returns (EvictResponse);
-  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Write          (WriteRequest)    returns (WriteResponse);
+  rpc Read           (ReadRequest)     returns (ReadResponse);
+  rpc SemanticSearch (SearchRequest)   returns (SearchResponse);
+  rpc Evict          (EvictRequest)    returns (EvictResponse);
+  rpc Health         (HealthRequest)   returns (HealthResponse);
+
+  // Phase 3: KV cache prefix sharing backed by memory-mapped files.
+  rpc KvWrite        (KvWriteRequest)  returns (KvWriteResponse);
+  rpc KvRead         (KvReadRequest)   returns (KvReadResponse);
+  rpc KvEvict        (KvEvictRequest)  returns (KvEvictResponse);
 }
+
+// ---------- memory chunks (Phase 1 / 1.5) ----------
 
 message MemoryChunk {
   string              id            = 1;
@@ -19,12 +26,10 @@ message MemoryChunk {
   map<string, string> meta          = 7;
 }
 
-message WriteRequest { MemoryChunk chunk = 1; }
-
+message WriteRequest  { MemoryChunk chunk = 1; }
 message WriteResponse { string id = 1; bool ok = 2; }
 
-message ReadRequest { string id = 1; }
-
+message ReadRequest  { string id = 1; }
 message ReadResponse { MemoryChunk chunk = 1; bool found = 2; }
 
 message SearchRequest {
@@ -37,10 +42,35 @@ message SearchResponse { repeated ScoredChunk results = 1; }
 
 message ScoredChunk { MemoryChunk chunk = 1; float score = 2; }
 
-message EvictRequest { string session_id = 1; }
-
+message EvictRequest  { string session_id = 1; }
 message EvictResponse { uint32 evicted_count = 1; }
 
 message HealthRequest {}
+message HealthResponse {
+  string status           = 1;
+  uint64 chunks_stored    = 2;
+  uint64 kv_entries_cached = 3;
+}
 
-message HealthResponse { string status = 1; uint64 chunks_stored = 2; }
+// ---------- KV cache prefix sharing (Phase 3) ----------
+
+// A cached KV slab for a specific (model, prefix) pair.
+// `data` is opaque bytes — keel treats the tensor layout as the caller's concern.
+message KvEntry {
+  string prefix_hash   = 1; // caller-generated hash of the token prefix
+  string model_id      = 2; // e.g. "llama-3-8b", "gpt-4"
+  int32  seq_len       = 3; // number of prefix tokens
+  bytes  data          = 4; // packed KV tensors
+  uint64 created_at_ms = 5;
+  uint64 ttl_ms        = 6; // 0 = no expiry
+}
+
+message KvWriteRequest  { KvEntry entry = 1; }
+message KvWriteResponse { string prefix_hash = 1; bool ok = 2; }
+
+message KvReadRequest  { string prefix_hash = 1; string model_id = 2; }
+message KvReadResponse { KvEntry entry = 1; bool found = 2; }
+
+// Pass empty model_id to evict all cached entries across all models.
+message KvEvictRequest  { string model_id = 1; }
+message KvEvictResponse { uint32 evicted_count = 1; }

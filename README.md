@@ -116,7 +116,7 @@ keel is designed to run as a DaemonSet — one instance per inference node. Infe
 | 1 | ✅ Complete | Single-node daemon: write, read, semantic search, TTL, session eviction, health, signal export |
 | 1.5 | ✅ Complete | **Tantivy storage layer** — FlatIndex hot tier + TantivyStore (BM25 + quantized embedding terms) |
 | 2 | ✅ Complete | **Multi-node routing** — session-affinity consistent-hash routing, peer forwarding, fan-out search, dead-peer circuit breaker |
-| 3 | Planned | KV cache prefix sharing backed by memory-mapped files |
+| 3 | ✅ Complete | **KV cache prefix sharing** — `memmap2`-backed slab store, LRU eviction, TTL, index persistence, 3 new gRPC RPCs |
 | 4 | Planned | S3 training signal export as Parquet |
 | 5 | Planned | **Observer UI** — lightweight HTTP dashboard for ML engineers to monitor keel during training runs via `kubectl port-forward` |
 

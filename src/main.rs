@@ -8,6 +8,7 @@ mod server;
 use clap::Parser;
 use config::Config;
 use keel_cluster::cluster::ClusterManager;
+use keel_kvcache::store::KvCacheStore;
 use keel_signal::SignalExporter;
 use keel_store::registry::MemoryRegistry;
 use server::KeelServer;
@@ -30,6 +31,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let signal = Arc::new(SignalExporter::new(&config.signal_output_path));
 
+    let kv_store = Arc::new(KvCacheStore::new(
+        &config.kv_cache_dir,
+        config.kv_cache_max_entries,
+    )?);
+
+    // Phase 2: build cluster manager if peers are configured.
     let cluster = {
         let peers: Vec<String> = config
             .peers
@@ -62,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let server = KeelServer::new(config, registry, signal, cluster);
+    let server = KeelServer::new(config, registry, signal, cluster, kv_store);
     server.run().await?;
 
     Ok(())

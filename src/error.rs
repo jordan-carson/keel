@@ -7,6 +7,9 @@ pub enum KeelError {
     #[error("{0}")]
     Store(#[from] keel_store::error::StoreError),
 
+    #[error("{0}")]
+    KvCache(#[from] keel_kvcache::error::KvError),
+
     #[error("gRPC error: {0}")]
     Grpc(String),
 
