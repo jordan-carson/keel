@@ -96,19 +96,24 @@ The persistent cold tier. Schema:
 - `server.rs` Write handler: checks `cluster.is_local_session(session_id)` and forwards to peer if not local; falls back to local if peer is unreachable.
 - Cluster is optional: `None` = single-node mode; `Some(...)` = cluster mode activated when `--peers` / `KEEL_PEERS` is non-empty.
 
-### What is not yet wired
+### Phase 2 completion — what changed
 
-- Hot tier startup rebuild — FlatIndex starts empty; vectors are added on new writes only (not reloaded from Tantivy on start).
-- Hot tier LRU bounding — `hot_tier_max` config field exists but not enforced; FlatIndex grows unbounded until `max_chunks` eviction.
-- `SemanticSearch` fan-out — currently searches local node only; cross-node fan-out needed for Phase 2 completion.
-- Gossip / peer health — no peer failure detection; peers assumed healthy.
-- Unix socket transport — config currently binds TCP.
+- **Hot tier startup rebuild** — `MemoryRegistry::new` calls `store.scan_embeddings(hot_tier_max)` and pre-populates `FlatIndex` from persisted data. Searches are warm immediately after restart.
+- **Hot tier LRU bounding** — `hot_lru: Mutex<VecDeque<String>>` tracks insertion order. On write, if `hot.len() >= hot_tier_max`, the LRU entry is removed from `FlatIndex` (but stays in `TantivyStore`). The `hot_tier_max` config is now enforced.
+- **SemanticSearch fan-out** — `KeelService::semantic_search` queries local registry then calls `cluster.fan_out_search(req)` which fires concurrent tonic RPCs to all live peers. Results are merged, deduplicated by chunk ID, sorted by score, truncated to `top_k`.
+- **Dead-peer circuit breaker** — `ClusterManager` maintains `dead_until: RwLock<HashMap<String, Instant>>`. Failed peers (write forward or fan-out search) are skipped for 30 s. No background task — expiry is checked on each call.
+
+### Still deferred
+
+- Gossip / active health probing — deferred to Phase 3+.
+- Unix socket transport — config binds TCP only.
+- Full multi-node integration test — requires spinning up two tonic servers in the same test process; currently covered by unit tests in `keel-cluster`.
 
 ## Phase plan
 
 - **Phase 1** ✅ complete: single-node gRPC daemon
 - **Phase 1.5** ✅ complete: Tantivy storage (FlatIndex hot tier + TantivyStore)
-- **Phase 2** 🔜 in progress: session-affinity routing (router + cluster modules done; fan-out search + gossip TODO)
+- **Phase 2** ✅ complete: session-affinity routing, Write forwarding, SemanticSearch fan-out, dead-peer circuit breaker, hot-tier rebuild + LRU bounding
 - **Phase 3**: KV cache prefix sharing backed by `memmap2`
 - **Phase 4**: S3 training signal export as Parquet via `arrow`/`parquet` crates
 - **Phase 5**: Observer UI — lightweight HTTP dashboard on port 9091 for `kubectl port-forward` monitoring

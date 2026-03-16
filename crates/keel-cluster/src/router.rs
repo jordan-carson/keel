@@ -32,6 +32,15 @@ impl SessionRouter {
     pub fn peer_count(&self) -> usize {
         self.nodes.len().saturating_sub(1)
     }
+
+    /// Returns all node addresses that are NOT this node.
+    pub fn peer_addrs(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|n| n.as_str() != self.local_addr.as_str())
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -56,6 +65,21 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(router.node_for_session("session-xyz"), first);
         }
+    }
+
+    #[test]
+    fn test_peer_addrs_excludes_local() {
+        let nodes = vec![
+            "node-a:50051".to_string(),
+            "node-b:50051".to_string(),
+            "node-c:50051".to_string(),
+        ];
+        let router = SessionRouter::new(nodes, "node-a:50051".into());
+        let peers = router.peer_addrs();
+        assert_eq!(peers.len(), 2);
+        assert!(!peers.contains(&"node-a:50051".to_string()));
+        assert!(peers.contains(&"node-b:50051".to_string()));
+        assert!(peers.contains(&"node-c:50051".to_string()));
     }
 
     #[test]

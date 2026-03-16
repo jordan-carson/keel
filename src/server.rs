@@ -1,7 +1,9 @@
 // gRPC server: tonic KeelMemory service implementation
 //
-// Phase 2: when a ClusterManager is present, writes and searches are forwarded
-// to the owning node based on session_id consistent-hash routing.
+// Phase 2 routing:
+//   Write  — forwarded to the session-owning peer; falls back to local on peer failure.
+//   Search — fan-out to all live peers, results merged with local, deduped, top-k returned.
+//   All other RPCs — local only (Read, Evict, Health).
 
 use crate::config::Config;
 use crate::error::{KeelError, Result};
@@ -13,6 +15,7 @@ use keel_proto::pb::{
 };
 use keel_signal::{now_ms, SignalEvent, SignalEventType, SignalExporter};
 use keel_store::registry::{bytes_to_f32, MemoryRegistry};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -47,17 +50,30 @@ impl KeelMemory for KeelService {
                     session_id,
                     owner
                 );
-                if let Some(mut client) = cluster.get_client(&owner).await {
-                    return client
-                        .write(Request::new(WriteRequest { chunk: Some(chunk) }))
-                        .await
-                        .map_err(|e| Status::unavailable(format!("Peer {}: {}", owner, e)));
+                if !cluster.is_dead(&owner) {
+                    if let Some(mut client) = cluster.get_client(&owner).await {
+                        match client
+                            .write(Request::new(WriteRequest { chunk: Some(chunk.clone()) }))
+                            .await
+                        {
+                            Ok(resp) => return Ok(resp),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Peer {} write failed: {}; marking dead, handling locally",
+                                    owner,
+                                    e
+                                );
+                                cluster.mark_dead(&owner);
+                            }
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        "Peer {} is dead; handling session {} locally",
+                        owner,
+                        session_id
+                    );
                 }
-                tracing::warn!(
-                    "Peer {} unavailable for session {}; handling locally",
-                    owner,
-                    session_id
-                );
             }
         }
 
@@ -106,18 +122,38 @@ impl KeelMemory for KeelService {
         let top_k = req.top_k as usize;
         let min_score = req.min_score;
 
-        let results = self
+        // Local search
+        let mut all_results = self
             .registry
             .search(&query, top_k, min_score)
             .await
             .map_err(to_status)?;
 
-        let event_type = if results.is_empty() {
+        // Phase 2: fan-out to all live peers and merge results.
+        if let Some(cluster) = &self.cluster {
+            if cluster.peer_count() > 0 {
+                let peer_results = cluster.fan_out_search(req.clone()).await;
+                all_results.extend(peer_results);
+            }
+        }
+
+        // Deduplicate by chunk ID, sort by score descending, truncate to top_k.
+        let mut seen_ids: HashSet<String> = HashSet::new();
+        all_results.retain(|sc| {
+            match sc.chunk.as_ref().map(|c| c.id.as_str()) {
+                Some(id) if !id.is_empty() => seen_ids.insert(id.to_string()),
+                _ => true,
+            }
+        });
+        all_results
+            .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        all_results.truncate(top_k);
+
+        let event_type = if all_results.is_empty() {
             SignalEventType::Miss
         } else {
             SignalEventType::Hit
         };
-
         self.signal.emit(SignalEvent {
             event_type,
             session_id: String::new(),
@@ -126,7 +162,7 @@ impl KeelMemory for KeelService {
             timestamp_ms: now_ms(),
         });
 
-        Ok(Response::new(SearchResponse { results }))
+        Ok(Response::new(SearchResponse { results: all_results }))
     }
 
     async fn evict(
@@ -156,15 +192,23 @@ impl KeelMemory for KeelService {
         _request: Request<HealthRequest>,
     ) -> std::result::Result<Response<HealthResponse>, Status> {
         let chunks_stored = self.registry.count().await.map_err(to_status)?;
-        let peer_count = self
+        let (peer_count, dead_count) = self
             .cluster
             .as_ref()
-            .map(|c| c.peer_count())
-            .unwrap_or(0);
-        Ok(Response::new(HealthResponse {
-            status: format!("ok (peers: {})", peer_count),
-            chunks_stored,
-        }))
+            .map(|c| {
+                let peers = c.peer_addrs();
+                let dead = peers.iter().filter(|a| c.is_dead(a)).count();
+                (peers.len(), dead)
+            })
+            .unwrap_or((0, 0));
+
+        let status = if dead_count > 0 {
+            format!("ok (peers: {}, dead: {})", peer_count, dead_count)
+        } else {
+            format!("ok (peers: {})", peer_count)
+        };
+
+        Ok(Response::new(HealthResponse { status, chunks_stored }))
     }
 }
 
@@ -187,7 +231,10 @@ impl KeelServer {
 
     pub async fn run(self) -> Result<()> {
         let addr: std::net::SocketAddr = self.config.bind_address.parse().map_err(|e| {
-            KeelError::Config(format!("Invalid bind address '{}': {}", self.config.bind_address, e))
+            KeelError::Config(format!(
+                "Invalid bind address '{}': {}",
+                self.config.bind_address, e
+            ))
         })?;
 
         let service = KeelService {

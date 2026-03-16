@@ -115,7 +115,7 @@ keel is designed to run as a DaemonSet — one instance per inference node. Infe
 |---|---|---|
 | 1 | ✅ Complete | Single-node daemon: write, read, semantic search, TTL, session eviction, health, signal export |
 | 1.5 | ✅ Complete | **Tantivy storage layer** — FlatIndex hot tier + TantivyStore (BM25 + quantized embedding terms) |
-| 2 | 🔜 In Progress | **Multi-node routing** — session-affinity consistent-hash routing, peer forwarding via tonic client |
+| 2 | ✅ Complete | **Multi-node routing** — session-affinity consistent-hash routing, peer forwarding, fan-out search, dead-peer circuit breaker |
 | 3 | Planned | KV cache prefix sharing backed by memory-mapped files |
 | 4 | Planned | S3 training signal export as Parquet |
 | 5 | Planned | **Observer UI** — lightweight HTTP dashboard for ML engineers to monitor keel during training runs via `kubectl port-forward` |
@@ -175,12 +175,15 @@ flowchart LR
 
 | Component | Status | Notes |
 |---|---|---|
-| `router.rs` / `SessionRouter` | ✅ Done | Consistent-hash (FNV) session → node mapping |
-| `cluster.rs` / `ClusterManager` | ✅ Done | Lazy tonic client pool per peer; `get_client(addr)` |
-| `server.rs` forwarding | ✅ Done | `Write` forwards to peer; falls back to local on peer unavailable |
+| `router.rs` / `SessionRouter` | ✅ Done | Consistent-hash (DefaultHasher) session → node mapping |
+| `cluster.rs` / `ClusterManager` | ✅ Done | Lazy tonic client pool; `get_client(addr)`, `fan_out_search` |
+| `server.rs` Write forwarding | ✅ Done | Forwards to owning peer; marks peer dead and falls back to local on failure |
+| `server.rs` Search fan-out | ✅ Done | Fires concurrent `SemanticSearch` RPCs to all live peers; merges + deduplicates results |
+| Dead-peer circuit breaker | ✅ Done | Failed peers skipped for 30 s; auto-clears on expiry — no background task needed |
 | Peer discovery | Config-driven | Set `KEEL_PEERS=node-1:50051,node-2:50051` or `--peers` flag |
-| Fan-out `SemanticSearch` | TODO | Currently searches local node only; cross-node fan-out in next iteration |
-| Gossip / health | TODO | Peer failure detection; for now assumes peers are healthy |
+| Hot-tier startup rebuild | ✅ Done | `FlatIndex` populated from `TantivyStore` on open; searches warm immediately after restart |
+| Hot-tier LRU bounding | ✅ Done | `hot_tier_max` enforced; LRU entry evicted from `FlatIndex` on overflow (stays in cold tier) |
+| Gossip / failure detection | Future | Active health probing deferred to Phase 3+ |
 
 **Kubernetes deployment:**
 ```yaml

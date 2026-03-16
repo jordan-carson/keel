@@ -13,7 +13,7 @@ use prost::Message;
 use std::path::Path;
 use std::sync::Mutex;
 use tantivy::collector::TopDocs;
-use tantivy::query::{QueryParser, TermQuery};
+use tantivy::query::{AllQuery, QueryParser, TermQuery};
 use tantivy::schema::{BytesOptions, Field, NumericOptions, OwnedValue, Schema, STRING, STORED, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
@@ -209,6 +209,30 @@ impl TantivyStore {
 
     pub fn count(&self) -> u64 {
         self.reader.searcher().num_docs()
+    }
+
+    /// Scan up to `limit` documents and return `(id, embedding_bytes)` for chunks that have
+    /// a non-empty embedding. Used on startup to rebuild the hot-tier FlatIndex.
+    pub fn scan_embeddings(&self, limit: usize) -> Result<Vec<(String, Vec<u8>)>> {
+        let searcher = self.reader.searcher();
+        let top_docs = searcher
+            .search(&AllQuery, &TopDocs::with_limit(limit))
+            .map_err(|e| StoreError::Storage(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for (_score, addr) in top_docs {
+            let doc: TantivyDocument = searcher
+                .doc(addr)
+                .map_err(|e| StoreError::Storage(e.to_string()))?;
+            if let Some(bytes) = doc.get_first(self.f_raw_bytes).and_then(owned_as_bytes) {
+                if let Ok(chunk) = MemoryChunk::decode(bytes) {
+                    if !chunk.embedding.is_empty() {
+                        results.push((chunk.id, chunk.embedding));
+                    }
+                }
+            }
+        }
+        Ok(results)
     }
 
     fn collect_ids(

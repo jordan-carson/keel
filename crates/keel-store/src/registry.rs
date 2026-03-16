@@ -1,12 +1,21 @@
 // MemoryRegistry: two-tier storage
-//   Hot tier  — FlatIndex (in-memory, exact cosine)
+//   Hot tier  — FlatIndex (in-memory, exact cosine, bounded by hot_tier_max)
 //   Cold tier — TantivyStore (persistent, BM25 + embedding term search)
+//
+// Startup: hot tier is rebuilt from TantivyStore by scanning up to hot_tier_max
+//          chunks with embeddings, so searches are warm immediately after restart.
+//
+// Hot-tier bounding: insertions evict the LRU entry from FlatIndex when
+//                    hot.len() == hot_tier_max, keeping memory bounded.
+//                    Evicted entries remain in TantivyStore and are still found
+//                    via cold-tier embedding-term search.
 
 use crate::error::{Result, StoreError};
 use crate::eviction::{EvictionPolicy, LruEvictionPolicy};
 use crate::index::{cosine_similarity, FlatIndex};
 use crate::store::{quantize_embedding, TantivyStore};
 use keel_proto::pb::{MemoryChunk, ScoredChunk};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
@@ -20,23 +29,36 @@ fn now_ms() -> u64 {
 
 pub struct MemoryRegistry {
     hot: Arc<AsyncMutex<FlatIndex>>,
+    /// Insertion-order LRU for hot tier (front = most recent). Sync mutex — never held
+    /// across an .await point.
+    hot_lru: Mutex<VecDeque<String>>,
     store: Arc<TantivyStore>,
     eviction: Mutex<Box<dyn EvictionPolicy>>,
     max_chunks: usize,
-    #[allow(dead_code)]
     hot_tier_max: usize,
 }
 
 impl MemoryRegistry {
     pub fn new(data_dir: &str, dim: usize, hot_tier_max: usize, max_chunks: usize) -> Result<Self> {
         let store = TantivyStore::new(data_dir)?;
+
+        // Rebuild hot tier from persisted data on startup.
+        let mut hot_index = FlatIndex::new(dim);
+        let mut hot_lru_deque: VecDeque<String> = VecDeque::new();
+        for (id, emb_bytes) in store.scan_embeddings(hot_tier_max)? {
+            if let Ok(vector) = bytes_to_f32(&emb_bytes) {
+                let _ = hot_index.insert(&id, &vector);
+                hot_lru_deque.push_back(id); // oldest at back; new writes push_front
+            }
+        }
+
         let eviction_policy: Box<dyn EvictionPolicy> = Box::new(LruEvictionPolicy::new());
-        let eviction = Mutex::new(eviction_policy);
 
         Ok(Self {
-            hot: Arc::new(AsyncMutex::new(FlatIndex::new(dim))),
+            hot: Arc::new(AsyncMutex::new(hot_index)),
+            hot_lru: Mutex::new(hot_lru_deque),
             store: Arc::new(store),
-            eviction,
+            eviction: Mutex::new(eviction_policy),
             max_chunks,
             hot_tier_max,
         })
@@ -63,9 +85,29 @@ impl MemoryRegistry {
 
         self.store.write(&chunk, &embedding_terms)?;
 
+        // Insert into hot tier with LRU bounding.
         if !chunk.embedding.is_empty() {
             if let Ok(vector) = bytes_to_f32(&chunk.embedding) {
                 let mut hot = self.hot.lock().await;
+
+                // Evict LRU entry from FlatIndex if at capacity.
+                let maybe_evict = {
+                    let mut lru = self.hot_lru.lock().unwrap();
+                    let evict = if hot.len() >= self.hot_tier_max {
+                        lru.pop_back()
+                    } else {
+                        None
+                    };
+                    // Move id to front (most recent).
+                    if let Some(pos) = lru.iter().position(|x| x == &id) {
+                        lru.remove(pos);
+                    }
+                    lru.push_front(id.clone());
+                    evict
+                };
+                if let Some(ref eid) = maybe_evict {
+                    let _ = hot.remove(eid);
+                }
                 let _ = hot.insert(&id, &vector);
             }
         }
@@ -176,6 +218,10 @@ impl MemoryRegistry {
         {
             let mut hot = self.hot.lock().await;
             let _ = hot.remove(id);
+            let mut lru = self.hot_lru.lock().unwrap();
+            if let Some(pos) = lru.iter().position(|x| x == id) {
+                lru.remove(pos);
+            }
         }
         self.eviction.lock().unwrap().on_delete(id);
         Ok(())
